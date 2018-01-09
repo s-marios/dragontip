@@ -60,14 +60,13 @@ class L2Switch(app_manager.RyuApp):
             print("number of macs: {} \n".format(len(self.forwardingTable)));
         #print("Mac:" + src);
         self.forwardingTable[src] = msg.in_port;
-        #print("blah");
  
+        #print("message id: " + str(msg.buffer_id ))
         #flooding the packet to all the ports we know
         actions = [ofp_parser.OFPActionOutput(ofp.OFPP_FLOOD)]
-        ofp_parser.OFPActionOutput
         out = ofp_parser.OFPPacketOut(
             datapath = dp, buffer_id = msg.buffer_id, in_port=msg.in_port,
-            actions=actions)
+            actions=actions, data = msg.data)
         dp.send_msg(out)
         #print(msg)
         
