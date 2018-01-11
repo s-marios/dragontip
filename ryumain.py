@@ -37,7 +37,7 @@ class L2Switch(app_manager.RyuApp):
             print("#macs: {}".format(len(self.forwardingTable)));
             #print("mac list: {}".format("".join(map(self.forwardingTable.values()))));
             print("macs: \n{}".format("\t".join(self.forwardingTable.keys())));
-            #self.periodic_packet();
+            self.periodic_packet();
         
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -67,8 +67,7 @@ class L2Switch(app_manager.RyuApp):
         out = ofp_parser.OFPPacketOut(
             datapath = dp, buffer_id = msg.buffer_id, in_port=msg.in_port,
             actions=actions, data = msg.data)
-        dp.send_msg(out)
-        #print(msg)
+        dp.send_msg(out);
         
     @set_ev_cls(dpset.EventDP, MAIN_DISPATCHER)
     def switch_connect(self, ev):
@@ -91,34 +90,40 @@ class L2Switch(app_manager.RyuApp):
         print("\nOUT OF SWITCH CONNECT\n");
         
     def periodic_packet(self):
-        pkt : Packet = packet.Packet();
-        eth : ethernet.ethernet = ethernet.ethernet(ethertype = 0x0800);
-        eth.dst = 0xffffffff;
-        pkt.add_protocol(eth);
-        print("1")
-        tlvs : List = [];
-        chassis = ChassisID(subtype=ChassisID.SUB_LOCALLY_ASSIGNED, chassis_id = b'muh swi');
-        tlvs.append(chassis);
-        portid : PortID = PortID(subtype= PortID.SUB_LOCALLY_ASSIGNED, port_id=b'\x09');
-        tlvs.append(portid);
-        print("2")
-        ttl : TTL = TTL(ttl=255);
-        tlvs.append(ttl);
-        end : End = End();
-        tlvs.append(end);
-        print("3")
-        proto_lldp : lldp = lldp(tlvs);
-        pkt.add_protocol(proto_lldp);
-        pkt.serialize();
+        if self.dp is None:
+            return
+        pkt : Packet = self.makeTestLLDP();
+
         print("4")
-        actions = [self.dp.ofproto_parser.OFPActionOutput(self.dp.ofproto.OFPP_FLOOD, 0)];
+        actions = [self.dp.ofproto_parser.OFPActionOutput(self.dp.ofproto.OFPP_FLOOD)];
         print("5")
         out = self.dp.ofproto_parser.OFPPacketOut(
-            datapath = self.dp, buffer_id = 0xffffffff, in_port=OFPP_NONE,
+            datapath = self.dp,  buffer_id = self.dp.ofproto.OFP_NO_BUFFER, in_port=OFPP_NONE,
             actions=actions, data=pkt);
         print("6")
         self.dp.send_msg(out);
         print("\nSent Stuff!\n");
+        
+    def makeTestLLDP(self) -> packet: 
+        pkt : Packet = packet.Packet();
+        eth : ethernet.ethernet = ethernet.ethernet(ethertype = 0x88cc);
+        eth.src = 0x000000000001;
+        eth.dst = 0xffffffffffff;
+        pkt.add_protocol(eth);
+        tlvs : List = [];
+        chassis = ChassisID(subtype=ChassisID.SUB_LOCALLY_ASSIGNED, chassis_id = b'muh switch');
+        tlvs.append(chassis);
+        portid : PortID = PortID(subtype= PortID.SUB_LOCALLY_ASSIGNED, port_id=b'\x09');
+        tlvs.append(portid);
+        ttl : TTL = TTL(ttl=255);
+        tlvs.append(ttl);
+        end : End = End();
+        tlvs.append(end);
+        proto_lldp : lldp = lldp(tlvs);
+        pkt.add_protocol(proto_lldp);
+        pkt.serialize();
+        return pkt;
+        
     
     def test_makeHTIPpacket(self):
         pkt : Packet = packet.Packet();
