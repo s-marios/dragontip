@@ -16,7 +16,7 @@ from ryu.lib.packet.lldp import lldp, ChassisID, PortID, TTL, End,\
 from ryu.controller.controller import Datapath;
 from ryu.lib import hub
 from ryu.ofproto.ofproto_v1_0 import OFPP_NONE
-from typing import Tuple
+from typing import Tuple, List, Set
 
 class L2Switch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
@@ -29,7 +29,11 @@ class L2Switch(app_manager.RyuApp):
         self.test_makeHTIPpacket();
         self.threads.append(hub.spawn(self.periodic_test));
         self.dp :Datapath = None;
-        self.bridgemac = ""
+        self.bridgemac = "";
+        #macs as a list of bytes here
+        self.uniquemacs : List[bytes] = [];
+        self.parser : HTIPParser = HTIPParser();
+
         
     def periodic_test(self):
         woke = 0;
@@ -40,6 +44,7 @@ class L2Switch(app_manager.RyuApp):
             #print("mac list: {}".format("".join(map(self.forwardingTable.values()))));
             print("macs: \n{}".format("\t".join(self.forwardingTable.keys())));
             self.periodic_packet();
+
         
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
@@ -62,6 +67,7 @@ class L2Switch(app_manager.RyuApp):
             datapath = dp, buffer_id = msg.buffer_id, in_port=msg.in_port,
             actions=actions, data = msg.data)
         dp.send_msg(out);
+
         
     @set_ev_cls(dpset.EventDP, MAIN_DISPATCHER)
     def switch_connect(self, ev):
@@ -82,32 +88,40 @@ class L2Switch(app_manager.RyuApp):
         print("port numbers: "  + "".join(map(str, ports)));
         print("\nOUT OF SWITCH CONNECT\n");
         print("hw_addr")
-        mac, count = self.getBridgeMac(ports)
+        #get mac info
+        mac, count, uniquemacs = self.getMacInformation(ports)
         print("Mac: " + mac + ", count number: " + str(count));
         self.bridgemac = mac;
+        self.uniquemacs = [bytes.fromhex(amac.replace(':','')) for amac in uniquemacs];
+        #finally setup an HTIP parser.
+        self.parser.mac = self.bridgemac;
 
         
-    def getBridgeMac(self, ports) -> Tuple[str, int]:
+    def getMacInformation(self, ports) -> Tuple[str, int, Set[str]]:
         #populate the mac dictionary with the counts of macs
-        macs = {}
+        macs = {};
         for port in ports:
             if port.hw_addr in macs:
-                macs[port.hw_addr] += 1
+                macs[port.hw_addr] += 1;
             else:
                 macs[port.hw_addr] = 1;
         #find the mac with the max instance count
         count : int = 0;
-        result : str = ""
+        result : str = "";
         for mac in macs.keys():
             if macs[mac] > count:
-                count = macs[mac]
-                result = mac
-        return result, count
+                count = macs[mac];
+                result = mac;
+        return result, count, set(macs.keys());
+
         
     def periodic_packet(self):
         if self.dp is None:
             return
-        pkt : Packet = self.makeTestLLDP();
+        #pkt : Packet = self.makeTestLLDP();
+        #setup subtype 3 here.
+        self.parser.macs = self.uniquemacs;
+        pkt : Packet = self.parser.makeHTIP();
 
         print("4")
         actions = [self.dp.ofproto_parser.OFPActionOutput(self.dp.ofproto.OFPP_FLOOD)];
@@ -118,6 +132,7 @@ class L2Switch(app_manager.RyuApp):
         print("6")
         self.dp.send_msg(out);
         print("\nSent Stuff!\n");
+
         
     def makeTestLLDP(self) -> packet: 
         pkt : Packet = packet.Packet();
@@ -211,23 +226,42 @@ class HTIPParser():
         self.htipModelNameSubtype : int = 3;
         self.htipModelNumber : str = "HTIP SWITCH V0.01";
         self.htipModelNumberSubtype : int = 4;
-        self.macs = [bytes.fromhex("DEADBEEFCAFE"), bytes.fromhex("AAAABBBBCCCC")];
+        self._mac : str = "";
+        self._macs : List [bytes] = [bytes.fromhex("DEADBEEFCAFE"), bytes.fromhex("AAAABBBBCCCC")];
         
-    def makeHTIP(self, forwardingTable : Dict [str, str]) -> bytearray:
+    @property
+    def mac(self):
+        return self._mac;
+    
+    @mac.setter
+    def mac(self, mac : str):
+        self._mac = mac;
+
+    @property
+    def macs(self):
+        return self._macs;
+    
+    @macs.setter
+    def macs(self, macs : List[str]):
+        self._macs = macs;
+        
+    def makeHTIP(self) -> bytearray:
 
         # TODO what is our own mac address? some datapath structure has it?j
         pkt : Packet = packet.Packet();
         # currently we're doing broadcasts
-        eth : ethernet.ethernet = ethernet.ethernet(ethertype=0x08CC);
+        eth : ethernet.ethernet = ethernet.ethernet(ethertype=0x88CC);
+        eth.src = self.mac;
+        eth.dst = 'FF:FF:FF:FF:FF:FF';
         pkt.add_protocol(eth);
         
         tlvs : List = [];
-        
         # create our htip message here
         # first standard LLDP things
 
         # chasis id must be mac address
-        chassis = ChassisID(subtype=ChassisID.SUB_MAC_ADDRESS , chassis_id=bytes.fromhex('deadbeefbabe'));
+        strippedmac : str = self.mac.replace(':', '');
+        chassis = ChassisID(subtype=ChassisID.SUB_MAC_ADDRESS , chassis_id=bytes.fromhex(strippedmac));
         tlvs.append(chassis);
         
         # port id is implementation specific. Let's grab the port we're going to send it out from
@@ -235,11 +269,17 @@ class HTIPParser():
         tlvs.append(portid);
         
         # ttl is implementation specific. However, let's think about this.
-        ttl : TTL = TTL(ttl=255);
-        tlvs.append(ttl);
+        #ttl : TTL = TTL(ttl=255);
+        tlvs.append(TTL(ttl=255));
         
-        htipType : OrganizationallySpecific = self.makeHTIPType();
-        tlvs.append(htipType);
+        #htipType : OrganizationallySpecific = self.makeHTIPType();
+        tlvs.append(self.makeHTIPType());
+        
+        #add the rest
+        tlvs.append(self.makeHTIPMakerCode());
+        tlvs.append(self.makeHTIPModelName());
+        tlvs.append(self.makeHTIPModelNumber());
+        tlvs.append(self.makeHTIPMacList());
 
         # outro
         end : End = End();
@@ -249,7 +289,8 @@ class HTIPParser():
         pkt.add_protocol(proto_lldp);
         
         pkt.serialize();
-        return pkt.data;
+        return pkt;
+
     
     def makeHTIPType(self) -> OrganizationallySpecific:
         bytesinfo : bytearray = bytearray([self.htipTypeSubtype]);  # subtype 1
@@ -259,6 +300,7 @@ class HTIPParser():
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=1, info=bytesinfo);
         return tlv;
 
+
     def makeHTIPMakerCode(self) -> OrganizationallySpecific:
         bytesinfo = bytearray([self.htipMakerCodeSubtype]);
         bytesinfo.append(len(self.htipMakerCode));
@@ -266,6 +308,7 @@ class HTIPParser():
 
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=1, info=bytesinfo);
         return tlv;
+
 
     def makeHTIPModelName(self) -> OrganizationallySpecific:
         bytesinfo = bytearray([self.htipModelNameSubtype]);
@@ -275,6 +318,7 @@ class HTIPParser():
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=1, info=bytesinfo);
         return tlv;
 
+
     def makeHTIPModelNumber(self) -> OrganizationallySpecific:
         bytesinfo = bytearray([self.htipModelNumberSubtype]);
         bytesinfo.append(len(self.htipModelNumber));
@@ -282,6 +326,7 @@ class HTIPParser():
 
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=1, info=bytesinfo);
         return tlv;
+
     
     def makeHTIPMacList(self) -> OrganizationallySpecific:
         bytesinfo = bytearray([len(self.macs)]);
