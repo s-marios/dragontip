@@ -16,6 +16,7 @@ from ryu.lib.packet.lldp import lldp, ChassisID, PortID, TTL, End,\
 from ryu.controller.controller import Datapath;
 from ryu.lib import hub
 from ryu.ofproto.ofproto_v1_0 import OFPP_NONE
+from typing import Tuple
 
 class L2Switch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
@@ -28,6 +29,7 @@ class L2Switch(app_manager.RyuApp):
         self.test_makeHTIPpacket();
         self.threads.append(hub.spawn(self.periodic_test));
         self.dp :Datapath = None;
+        self.bridgemac = ""
         
     def periodic_test(self):
         woke = 0;
@@ -42,29 +44,21 @@ class L2Switch(app_manager.RyuApp):
     @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
     def packet_in_handler(self, ev):
         msg : ofproto_v1_0_parser.OFPPacketIn = ev.msg;
-        #print("in packet in ", end="");
-        
         dp : Datapath = msg.datapath
-        ofp = dp.ofproto
-        ofp_parser = dp.ofproto_parser
+        proto = dp.ofproto
+        parser = dp.ofproto_parser
         inpkt : Packet = packet.Packet(msg.data);
         eth = inpkt.get_protocol(ethernet.ethernet);
-        
-
         src = eth.src;
         if src in self.forwardingTable:
             print("*", end="");
-            #print("old mac: "+ src);
         else:
             print("new mac: " + src);
             print("number of macs: {} \n".format(len(self.forwardingTable)));
-        #print("Mac:" + src);
         self.forwardingTable[src] = msg.in_port;
- 
-        #print("message id: " + str(msg.buffer_id ))
         #flooding the packet to all the ports we know
-        actions = [ofp_parser.OFPActionOutput(ofp.OFPP_FLOOD)]
-        out = ofp_parser.OFPPacketOut(
+        actions = [parser.OFPActionOutput(proto.OFPP_FLOOD)]
+        out = parser.OFPPacketOut(
             datapath = dp, buffer_id = msg.buffer_id, in_port=msg.in_port,
             actions=actions, data = msg.data)
         dp.send_msg(out);
@@ -86,8 +80,29 @@ class L2Switch(app_manager.RyuApp):
             print("datapath ID: "+ str(dp.id));
         print("number of ports: " + str(len(ports)));
         print("port numbers: "  + "".join(map(str, ports)));
-        #print("dp: " + dp);
         print("\nOUT OF SWITCH CONNECT\n");
+        print("hw_addr")
+        mac, count = self.getBridgeMac(ports)
+        print("Mac: " + mac + ", count number: " + str(count));
+        self.bridgemac = mac;
+
+        
+    def getBridgeMac(self, ports) -> Tuple[str, int]:
+        #populate the mac dictionary with the counts of macs
+        macs = {}
+        for port in ports:
+            if port.hw_addr in macs:
+                macs[port.hw_addr] += 1
+            else:
+                macs[port.hw_addr] = 1;
+        #find the mac with the max instance count
+        count : int = 0;
+        result : str = ""
+        for mac in macs.keys():
+            if macs[mac] > count:
+                count = macs[mac]
+                result = mac
+        return result, count
         
     def periodic_packet(self):
         if self.dp is None:
@@ -107,15 +122,15 @@ class L2Switch(app_manager.RyuApp):
     def makeTestLLDP(self) -> packet: 
         pkt : Packet = packet.Packet();
         eth : ethernet.ethernet = ethernet.ethernet(ethertype = 0x88cc);
-        eth.src = 0x000000000001;
-        eth.dst = 0xffffffffffff;
+        eth.src = self.bridgemac;
+        eth.dst = 'FF:FF:FF:FF:FF:FF';
         pkt.add_protocol(eth);
         tlvs : List = [];
         chassis = ChassisID(subtype=ChassisID.SUB_LOCALLY_ASSIGNED, chassis_id = b'muh switch');
         tlvs.append(chassis);
         portid : PortID = PortID(subtype= PortID.SUB_LOCALLY_ASSIGNED, port_id=b'\x09');
         tlvs.append(portid);
-        ttl : TTL = TTL(ttl=255);
+        ttl : TTL = TTL(ttl=1);
         tlvs.append(ttl);
         end : End = End();
         tlvs.append(end);
