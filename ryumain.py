@@ -17,6 +17,8 @@ from ryu.controller.controller import Datapath;
 from ryu.lib import hub
 from ryu.ofproto.ofproto_v1_0 import OFPP_NONE
 from typing import Tuple, List, Set
+from ryu.ofproto.ofproto_v1_0_parser import OFPPhyPort
+
 
 class L2Switch(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto_v1_0.OFP_VERSION]
@@ -25,13 +27,14 @@ class L2Switch(app_manager.RyuApp):
         super(L2Switch, self).__init__(*args, **kwargs)
         #self.forwardingTable = Dict[str, str];
         self.forwardingTable = {};
+        self.reverseForwardingTable : Dict [ int , Set[str]] = {};
         print("I'm alive!!");
-        self.test_makeHTIPpacket();
         self.threads.append(hub.spawn(self.periodic_test));
         self.dp :Datapath = None;
         self.bridgemac = "";
         #macs as a list of bytes here
         self.uniquemacs : List[bytes] = [];
+        self.ports : List[OFPPhyPort] = [];
         self.parser : HTIPParser = HTIPParser();
 
         
@@ -60,7 +63,14 @@ class L2Switch(app_manager.RyuApp):
         else:
             print("new mac: " + src);
             print("number of macs: {} \n".format(len(self.forwardingTable)));
+
+        #populate the normal forwarding table
         self.forwardingTable[src] = msg.in_port;
+        #populate the reverse table (port -> list of macs known, for later use)
+        if msg.in_port not in self.reverseForwardingTable:
+            self.reverseForwardingTable[msg.in_port] = set();
+        self.reverseForwardingTable[msg.in_port].add(src);
+
         #flooding the packet to all the ports we know
         actions = [parser.OFPActionOutput(proto.OFPP_FLOOD)]
         out = parser.OFPPacketOut(
@@ -89,7 +99,7 @@ class L2Switch(app_manager.RyuApp):
         print("\nOUT OF SWITCH CONNECT\n");
         print("hw_addr")
         #get mac info
-        mac, count, uniquemacs = self.getMacInformation(ports)
+        mac, count, uniquemacs, self.ports = self.getMacInformation(ports)
         print("Mac: " + mac + ", count number: " + str(count));
         self.bridgemac = mac;
         self.uniquemacs = [bytes.fromhex(amac.replace(':','')) for amac in uniquemacs];
@@ -97,10 +107,21 @@ class L2Switch(app_manager.RyuApp):
         self.parser.mac = self.bridgemac;
 
         
-    def getMacInformation(self, ports) -> Tuple[str, int, Set[str]]:
+    def getMacInformation(self, ports : List[OFPPhyPort]) -> Tuple[str, int, Set[str]]:
+        """Collect the bridge's mac information.
+        
+        This function goes over the port list reported by the switch and extracts the mac address
+        most likely to be used by the switch, based on simple counting.
+        
+        Returns:
+            Tuple: Bridge's mac address, number of times this mac was reported by the switch, a set
+            of all the mac addresses used by the switch, and a list of OFPPhyPorts
+        """
+        #TODO: maybe we should just pick the port with the highest number and stick with that.
         #populate the mac dictionary with the counts of macs
         macs = {};
         for port in ports:
+            print("Port number: " + str(port.port_no) + " hw_addr: " + port.hw_addr);
             if port.hw_addr in macs:
                 macs[port.hw_addr] += 1;
             else:
@@ -112,7 +133,7 @@ class L2Switch(app_manager.RyuApp):
             if macs[mac] > count:
                 count = macs[mac];
                 result = mac;
-        return result, count, set(macs.keys());
+        return result, count, set(macs.keys()), ports;
 
         
     def periodic_packet(self):
@@ -120,7 +141,7 @@ class L2Switch(app_manager.RyuApp):
             return
         #pkt : Packet = self.makeTestLLDP();
         #setup subtype 3 here.
-        self.parser.macs = self.uniquemacs;
+        self.setupHTIPParserData(self.parser);
         pkt : Packet = self.parser.makeHTIP();
 
         print("4")
@@ -133,78 +154,16 @@ class L2Switch(app_manager.RyuApp):
         self.dp.send_msg(out);
         print("\nSent Stuff!\n");
 
-        
-    def makeTestLLDP(self) -> packet: 
-        pkt : Packet = packet.Packet();
-        eth : ethernet.ethernet = ethernet.ethernet(ethertype = 0x88cc);
-        eth.src = self.bridgemac;
-        eth.dst = 'FF:FF:FF:FF:FF:FF';
-        pkt.add_protocol(eth);
-        tlvs : List = [];
-        chassis = ChassisID(subtype=ChassisID.SUB_LOCALLY_ASSIGNED, chassis_id = b'muh switch');
-        tlvs.append(chassis);
-        portid : PortID = PortID(subtype= PortID.SUB_LOCALLY_ASSIGNED, port_id=b'\x09');
-        tlvs.append(portid);
-        ttl : TTL = TTL(ttl=1);
-        tlvs.append(ttl);
-        end : End = End();
-        tlvs.append(end);
-        proto_lldp : lldp = lldp(tlvs);
-        pkt.add_protocol(proto_lldp);
-        pkt.serialize();
-        return pkt;
-        
     
-    def test_makeHTIPpacket(self):
-        pkt : Packet = packet.Packet();
-        eth : ethernet.ethernet = ethernet.ethernet(ethertype = 0x0800);
-        pkt.add_protocol(eth);
+    def setupHTIPParserData(self, parser):
+        #parser is an HTIP parser but we can't annotate it - PEP 0563 in the future?
+        parser.macs = self.uniquemacs;
+        parser.forwardingTable = self.reverseForwardingTable;
+        print(self.reverseForwardingTable);
+        print(parser.forwardingTable);
+        parser.ports = self.ports;
+    
         
-        #create all tlvs as necessary
-        tlvs : List = [];
-        chassis = ChassisID(subtype=ChassisID.SUB_LOCALLY_ASSIGNED, chassis_id = b'aaa bbb');
-        tlvs.append(chassis);
-        
-        portid : PortID = PortID(subtype= PortID.SUB_LOCALLY_ASSIGNED, port_id=b'\x09');
-        tlvs.append(portid);
-        
-        ttl : TTL = TTL(ttl=255);
-        tlvs.append(ttl);
-        
-        orgspec : OrganizationallySpecific = OrganizationallySpecific(oui = b'\xE0\x27\x1A', subtype=1, info= bytes.fromhex('aaaa'));
-        tlvs.append(orgspec);
-        
-        parser : HTIPParser = HTIPParser();
-
-        htipType : OrganizationallySpecific = parser.makeHTIPType();
-        tlvs.append(htipType);
-        
-        htipMakerCode : OrganizationallySpecific = parser.makeHTIPMakerCode();
-        tlvs.append(htipMakerCode);
-        
-        htipModelName : OrganizationallySpecific = parser.makeHTIPModelName();
-        tlvs.append(htipModelName);
-
-        htipModelNumber : OrganizationallySpecific = parser.makeHTIPModelNumber();
-        tlvs.append(htipModelNumber);
-        
-        htipmacs : OrganizationallySpecific = parser.makeHTIPMacList();
-        tlvs.append(htipmacs);
-        
-        end : End = End();
-        tlvs.append(end);
-
-        proto_lldp : lldp = lldp(tlvs);
-        #print(eth.serialize(bytearray(), None).hex());
-        #print(proto_lldp.serialize(None, None).hex());
-
-        pkt.add_protocol(proto_lldp);
-        pkt.serialize();
-
-
-        #just print the damn thing for now.
-        print("hex: " + pkt.data.hex());
-        print("text: " + pkt.data.decode("utf-8", "ignore" ));
         
 class HTIPParser():
     '''
@@ -213,6 +172,7 @@ class HTIPParser():
     This is supposed to be the main HTIP Packet creating/parsing class
     '''
     OUI : bytes = b'\xE0\x27\x1A';
+
 
     def __init__(self):
         '''
@@ -228,6 +188,9 @@ class HTIPParser():
         self.htipModelNumberSubtype : int = 4;
         self._mac : str = "";
         self._macs : List [bytes] = [bytes.fromhex("DEADBEEFCAFE"), bytes.fromhex("AAAABBBBCCCC")];
+        self._ports : List [OFPPhyPort] = [];
+        self._forwardingTable : Dict [int, Set [str]];
+        self.PORT_LENGTH = 2;
         
     @property
     def mac(self):
@@ -245,6 +208,23 @@ class HTIPParser():
     def macs(self, macs : List[str]):
         self._macs = macs;
         
+    @property
+    def ports(self):
+        return self._ports;
+    
+    @ports.setter
+    def ports(self, ports : List [OFPPhyPort]):
+        self._ports = ports;
+        
+    @property
+    def forwardingTable(self):
+        return self._forwardingTable;
+    
+    @forwardingTable.setter
+    def forwardingTable(self, forwardingTable):
+        self._forwardingTable = forwardingTable;
+
+
     def makeHTIP(self) -> bytearray:
 
         # TODO what is our own mac address? some datapath structure has it?j
@@ -275,10 +255,15 @@ class HTIPParser():
         #htipType : OrganizationallySpecific = self.makeHTIPType();
         tlvs.append(self.makeHTIPType());
         
-        #add the rest
+        #add the rest, subtype 1
         tlvs.append(self.makeHTIPMakerCode());
         tlvs.append(self.makeHTIPModelName());
         tlvs.append(self.makeHTIPModelNumber());
+        
+        #add mac fw table, subtype 2
+        tlvs.append(self.makeHTIPForwardingTable());
+        
+        #macs for this machine. subtype 3
         tlvs.append(self.makeHTIPMacList());
 
         # outro
@@ -325,6 +310,30 @@ class HTIPParser():
         bytesinfo.extend(self.htipModelNumber.encode(encoding='utf_8', errors='strict'));
 
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=1, info=bytesinfo);
+        return tlv;
+    
+    
+    def makeHTIPForwardingTable(self) -> OrganizationallySpecific:
+        bytesinfo : bytearray = bytearray([1, 6]); #interface type wired
+        bytesinfo.append(self.PORT_LENGTH); #is this OVS specific? figure out how to get port length
+        #port / mac loop
+        port : OFPPhyPort;
+        for port in self.ports:
+            bytesinfo.extend(port.port_no.to_bytes(self.PORT_LENGTH, byteorder='big'));
+            try:
+                howmany = len(self.forwardingTable[port.port_no]);
+            except:
+                howmany = 0;
+            bytesinfo.append(howmany);
+            if howmany is not 0:
+                amac : str;
+                for amac in self.forwardingTable[port.port_no]:
+                    bytesinfo.extend(bytes.fromhex(amac.replace(":","")));
+            #howmany = self._j  port.hw_addr
+        tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=2, info=bytesinfo);
+        print("parser's rft: "); 
+        print(self.forwardingTable);
+
         return tlv;
 
     
