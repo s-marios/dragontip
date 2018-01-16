@@ -33,7 +33,7 @@ class L2Switch(app_manager.RyuApp):
         self.dp :Datapath = None;
         self.bridgemac = "";
         #macs as a list of bytes here
-        self.uniquemacs : List[bytes] = [];
+        self.uniquemacs : Set[bytes] = set();
         self.ports : List[OFPPhyPort] = [];
         self.parser : HTIPParser = HTIPParser();
 
@@ -319,13 +319,14 @@ class HTIPParser():
         #port / mac loop
         port : OFPPhyPort;
         for port in self.ports:
-            bytesinfo.extend(port.port_no.to_bytes(self.PORT_LENGTH, byteorder='big'));
             try:
                 howmany = len(self.forwardingTable[port.port_no]);
             except:
                 howmany = 0;
-            bytesinfo.append(howmany);
             if howmany is not 0:
+                #we skip port info for ports with zero macs! Confirm with someone that this is ok
+                bytesinfo.extend(port.port_no.to_bytes(self.PORT_LENGTH, byteorder='big'));
+                bytesinfo.append(howmany);
                 amac : str;
                 for amac in self.forwardingTable[port.port_no]:
                     bytesinfo.extend(bytes.fromhex(amac.replace(":","")));
