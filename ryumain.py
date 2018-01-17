@@ -25,10 +25,9 @@ class L2Switch(app_manager.RyuApp):
 
     def __init__(self, *args, **kwargs):
         super(L2Switch, self).__init__(*args, **kwargs)
-        #self.forwardingTable = Dict[str, str];
-        self.forwardingTable = {};
+        #forwarding table (mac -> port mapping)
+        self.forwardingTable : Dict[str, int] = {};
         self.reverseForwardingTable : Dict [ int , Set[str]] = {};
-        print("I'm alive!!");
         self.threads.append(hub.spawn(self.periodic_test));
         self.dp :Datapath = None;
         self.bridgemac = "";
@@ -44,7 +43,6 @@ class L2Switch(app_manager.RyuApp):
             hub.sleep(5);
             woke += 1;
             print("#macs: {}".format(len(self.forwardingTable)));
-            #print("mac list: {}".format("".join(map(self.forwardingTable.values()))));
             print("macs: \n{}".format("\t".join(self.forwardingTable.keys())));
             self.periodic_packet();
 
@@ -71,8 +69,13 @@ class L2Switch(app_manager.RyuApp):
             self.reverseForwardingTable[msg.in_port] = set();
         self.reverseForwardingTable[msg.in_port].add(src);
 
-        #flooding the packet to all the ports we know
-        actions = [parser.OFPActionOutput(proto.OFPP_FLOOD)]
+        if eth.dst in self.forwardingTable:
+            #the destination is in our forwarding table
+            out_port = self.forwardingTable[eth.dst];
+        else:
+            #flooding the packet to all the ports we know
+            out_port = proto.OFPP_FLOOD;
+        actions = [parser.OFPActionOutput(out_port)]
         out = parser.OFPPacketOut(
             datapath = dp, buffer_id = msg.buffer_id, in_port=msg.in_port,
             actions=actions, data = msg.data)
