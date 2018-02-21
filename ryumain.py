@@ -4,6 +4,7 @@
 
 #import sys
 from typing import Dict;
+from datetime import datetime;
 from ryu.base import app_manager;
 from ryu.controller import ofp_event, dpset
 from ryu.controller.handler import MAIN_DISPATCHER;
@@ -28,7 +29,7 @@ class L2Switch(app_manager.RyuApp):
         #forwarding table (mac -> port mapping)
         self.forwardingTable : Dict[str, int] = {};
         self.reverseForwardingTable : Dict [ int , Set[str]] = {};
-        self.threads.append(hub.spawn(self.periodic_test));
+        self.threads.append(hub.spawn(self.periodic_task));
         self.dp :Datapath = None;
         self.bridgemac = "";
         #macs as a list of bytes here
@@ -37,13 +38,11 @@ class L2Switch(app_manager.RyuApp):
         self.parser : HTIPParser = HTIPParser();
 
         
-    def periodic_test(self):
+    def periodic_task(self):
         woke = 0;
         while True:
             hub.sleep(5);
             woke += 1;
-            print("#macs: {}".format(len(self.forwardingTable)));
-            print("macs: \n{}".format("\t".join(self.forwardingTable.keys())));
             self.periodic_packet();
 
         
@@ -57,7 +56,8 @@ class L2Switch(app_manager.RyuApp):
         eth = inpkt.get_protocol(ethernet.ethernet);
         src = eth.src;
         if src in self.forwardingTable:
-            print("*", end="");
+            pass;
+            #print("*", end="");
         else:
             print("new mac: " + src);
             print("number of macs: {} \n".format(len(self.forwardingTable)));
@@ -147,23 +147,22 @@ class L2Switch(app_manager.RyuApp):
         self.setupHTIPParserData(self.parser);
         pkt : Packet = self.parser.makeHTIP();
 
-        print("4")
         actions = [self.dp.ofproto_parser.OFPActionOutput(self.dp.ofproto.OFPP_FLOOD)];
-        print("5")
         out = self.dp.ofproto_parser.OFPPacketOut(
             datapath = self.dp,  buffer_id = self.dp.ofproto.OFP_NO_BUFFER, in_port=OFPP_NONE,
             actions=actions, data=pkt);
-        print("6")
         self.dp.send_msg(out);
-        print("\nSent Stuff!\n");
+        print()
+        print(str(datetime.now()) + ": sending HTIP info\n");
+        print("Number of macs: {}\n".format(len(self.forwardingTable)));
+        print(self.reverseForwardingTable);
+        print("\n");
 
     
     def setupHTIPParserData(self, parser):
         #parser is an HTIP parser but we can't annotate it - PEP 0563 in the future?
         parser.macs = self.uniquemacs;
         parser.forwardingTable = self.reverseForwardingTable;
-        print(self.reverseForwardingTable);
-        print(parser.forwardingTable);
         parser.ports = self.ports;
     
         
@@ -335,8 +334,6 @@ class HTIPParser():
                     bytesinfo.extend(bytes.fromhex(amac.replace(":","")));
             #howmany = self._j  port.hw_addr
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=2, info=bytesinfo);
-        print("parser's rft: "); 
-        print(self.forwardingTable);
 
         return tlv;
 
