@@ -263,7 +263,9 @@ class HTIPParser():
         tlvs.append(self.makeHTIPModelNumber());
         
         #add mac fw table, subtype 2
-        tlvs.append(self.makeHTIPForwardingTable());
+        port : OFPPhyPort;
+        for port in self.ports:
+            tlvs.append(self.makeHTIPForwardingTable(port));
         
         #macs for this machine. subtype 3
         tlvs.append(self.makeHTIPMacList());
@@ -315,26 +317,21 @@ class HTIPParser():
         return tlv;
     
     
-    def makeHTIPForwardingTable(self) -> OrganizationallySpecific:
+    def makeHTIPForwardingTable(self, port:OFPPhyPort) -> OrganizationallySpecific:
         bytesinfo : bytearray = bytearray([1, 6]); #interface type wired
         bytesinfo.append(self.PORT_LENGTH); #is this OVS specific? figure out how to get port length
         #port / mac loop
-        port : OFPPhyPort;
-        for port in self.ports:
-            try:
-                howmany = len(self.forwardingTable[port.port_no]);
-            except:
-                howmany = 0;
-            if howmany is not 0:
-                #we skip port info for ports with zero macs! Confirm with someone that this is ok
-                bytesinfo.extend(port.port_no.to_bytes(self.PORT_LENGTH, byteorder='big'));
-                bytesinfo.append(howmany);
-                amac : str;
-                for amac in self.forwardingTable[port.port_no]:
-                    bytesinfo.extend(bytes.fromhex(amac.replace(":","")));
-            #howmany = self._j  port.hw_addr
+        try:
+            howmany = len(self.forwardingTable[port.port_no]);
+        except:
+            howmany = 0;
+        bytesinfo.extend(port.port_no.to_bytes(self.PORT_LENGTH, byteorder='big'));
+        bytesinfo.append(howmany);
+        if howmany is not 0:
+            amac : str;
+            for amac in self.forwardingTable[port.port_no]:
+                bytesinfo.extend(bytes.fromhex(amac.replace(":","")));
         tlv : OrganizationallySpecific = OrganizationallySpecific(oui=HTIPParser.OUI, subtype=2, info=bytesinfo);
-
         return tlv;
 
     
